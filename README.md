@@ -10,6 +10,8 @@ project, and totals the day and the week.
 
 Hover it for the running task, its elapsed time, and today's total.
 
+![The bar glyph and the Clockify panel](preview.png)
+
 ## Install
 
 ```sh
