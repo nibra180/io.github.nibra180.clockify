@@ -62,7 +62,9 @@ remove a key supplied through `$CLOCKIFY_API_KEY`.
 
 Starting a timer while one runs switches: the old entry is stopped at that
 instant and the new one begins, the same as Clockify's own web UI. The selected
-project is remembered as the default for the next start.
+project is remembered as the default for the next start. If the workspace
+requires projects, the plugin asks for one before starting instead of creating
+a timer that Clockify later refuses to stop.
 
 Descriptions that begin with a ticket number are remembered from recent entries.
 Type `#42` to see earlier `#42 ...` descriptions. Pick one with the mouse or the

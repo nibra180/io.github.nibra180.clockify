@@ -38,6 +38,7 @@ Panel {
   // typing here describes the *next* task, which Start switches over to.
   property string draftDescription: ""
   property string draftProjectId: ""
+  property string draftError: ""
   property int descriptionSuggestionIndex: 0
   property bool descriptionSuggestionsDismissed: false
   readonly property var descriptionSuggestions: descriptionSuggestionsDismissed
@@ -60,8 +61,10 @@ Panel {
   readonly property string currentSection: sections.length === 0
     ? ""
     : String(sections[Math.max(0, Math.min(sections.length - 1, cursorIndex))])
-  readonly property string statusText: Model.statusLine(clockify.lastError, clockify.note, clockify.configured)
-  readonly property bool statusIsError: clockify.lastError !== ""
+  readonly property string statusText: clockify.lastError !== ""
+    ? Model.statusLine(clockify.lastError, clockify.note, clockify.configured)
+    : (draftError !== "" ? draftError : Model.statusLine("", clockify.note, clockify.configured))
+  readonly property bool statusIsError: draftError !== "" || clockify.lastError !== ""
 
   function sectionHasCursor(name) {
     return cursorActive && currentSection === name
@@ -89,11 +92,32 @@ Panel {
     else if (section === "project") projectDropdown.open()
   }
 
+  function startDraftTimer() {
+    if (!clockify.workspaceSettingsLoaded) {
+      draftError = "Loading workspace rules before starting…"
+      if (!opened) open()
+      clockify.refresh(true)
+      return
+    }
+    if (clockify.projectRequired && draftProjectId === "") {
+      draftError = "This workspace requires a project. Choose one before starting."
+      if (!opened) open()
+      Qt.callLater(function() { projectDropdown.open() })
+      return
+    }
+    draftError = ""
+    descriptionField.focus = false
+    clockify.start(draftDescription, draftProjectId)
+  }
+
   function toggleTimer() {
     if (clockify.actionBusy) return
-    if (clockify.timing) clockify.stop()
-    else clockify.start(draftDescription, draftProjectId)
-    clearDraftDescription()
+    if (clockify.timing) {
+      clockify.stop()
+      clearDraftDescription()
+    } else {
+      startDraftTimer()
+    }
   }
 
   // A timer is running now, so the draft has been consumed. The field's own
@@ -118,6 +142,7 @@ Panel {
     if (!suggestion) return
     descriptionField.text = String(suggestion.description || "")
     draftProjectId = selectableProjectId(suggestion.projectId)
+    if (draftProjectId !== "") draftError = ""
     descriptionSuggestionsDismissed = true
     descriptionField.forceActiveFocus()
     descriptionField.cursorPosition = descriptionField.text.length
@@ -169,6 +194,23 @@ Panel {
     }
     function onWorkspaceIdChanged() {
       root.draftProjectId = clockify.defaultProjectId
+      root.draftError = ""
+    }
+    function onWorkspaceSettingsLoadedChanged() {
+      if (clockify.workspaceSettingsLoaded
+          && root.draftError === "Loading workspace rules before starting…") {
+        root.draftError = ""
+      }
+    }
+    function onProjectRequiredChanged() {
+      if (clockify.projectRequired && root.draftProjectId === "") {
+        root.draftError = "This workspace requires a project. Choose one before starting."
+      } else if (root.draftError === "This workspace requires a project. Choose one before starting.") {
+        root.draftError = ""
+      }
+    }
+    function onTimerStarted() {
+      root.clearDraftDescription()
     }
   }
 
@@ -412,9 +454,7 @@ Panel {
                     root.pickDescriptionSuggestion(root.descriptionSuggestions[root.descriptionSuggestionIndex])
                     return
                   }
-                  focus = false
-                  clockify.start(root.draftDescription, root.draftProjectId)
-                  root.clearDraftDescription()
+                  root.startDraftTimer()
                 } else if (event.key === Qt.Key_Escape) {
                   if (root.descriptionSuggestionsVisible) root.descriptionSuggestionsDismissed = true
                   else focus = false
@@ -503,8 +543,11 @@ Panel {
                 showLabel: false
                 placeholderText: "Filter projects"
                 emptyText: clockify.projectsLoaded ? "No matching project" : "Loading projects…"
-                triggerLabel: "No project"
-                options: Model.projectOptions(clockify.projects, root.draftProjectId)
+                triggerLabel: clockify.projectRequired ? "Select a project" : "No project"
+                options: Model.projectOptions(
+                  clockify.projects,
+                  root.draftProjectId,
+                  !clockify.projectRequired)
                 value: root.draftProjectId
                 foreground: root.foreground
                 fontFamily: root.fontFamily
@@ -512,6 +555,7 @@ Panel {
                 onHovered: function(on) { if (on) root.focusSection("project") }
                 onChanged: function(value) {
                   root.draftProjectId = value
+                  root.draftError = ""
                   clockify.rememberProject(value)
                 }
               }

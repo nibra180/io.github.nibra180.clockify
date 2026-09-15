@@ -36,4 +36,9 @@ const remembered = model.rememberRecentEntry(entries, {
 assert.equal(remembered.length, 3);
 assert.equal(remembered[0].projectId, "new-project");
 
+const projects = [{ id: "p1", name: "Project", clientName: "Client" }];
+assert.equal(model.projectOptions(projects, "", true)[0].value, "");
+assert.equal(model.projectOptions(projects, "", false).length, 1);
+assert.equal(model.projectOptions(projects, "", false)[0].value, "p1");
+
 console.log("Model tests passed");

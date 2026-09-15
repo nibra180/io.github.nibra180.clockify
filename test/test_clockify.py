@@ -239,6 +239,74 @@ class ConfigStorage(unittest.TestCase):
         self.assertNotIn("defaultProjectId", clockify.load_config())
 
 
+class WorkspaceRules(unittest.TestCase):
+    def test_workspace_details_report_required_projects(self):
+        api = mock.Mock()
+        api.call.return_value = {
+            "name": "Work",
+            "workspaceSettings": {"forceProjects": True},
+        }
+        details = clockify.fetch_workspace_details("workspace", api)
+        self.assertEqual(details, {"name": "Work", "projectRequired": True})
+        api.call.assert_called_once_with("GET", "/workspaces/workspace")
+
+    def test_required_project_is_checked_before_stopping_current_timer(self):
+        args = type("Args", (), {
+            "description_stdin": False,
+            "description": "#42 remove footer",
+            "project": "",
+            "billable": False,
+        })()
+        ident = clockify.Identity("user", "workspace", "User")
+        with (
+            mock.patch.object(clockify, "load_config", return_value={"apiKey": "key"}),
+            mock.patch.object(clockify, "open_api", return_value=object()),
+            mock.patch.object(clockify, "identity", return_value=ident),
+            mock.patch.object(
+                clockify,
+                "fetch_workspace_details",
+                return_value={"name": "Work", "projectRequired": True},
+            ),
+            mock.patch.object(clockify, "stop_running") as stop_running,
+        ):
+            with self.assertRaisesRegex(clockify.ApiError, "requires a project") as raised:
+                clockify.cmd_start(args)
+        self.assertEqual(raised.exception.reason, "PROJECT_REQUIRED")
+        stop_running.assert_not_called()
+
+    def test_started_timer_is_reported_when_follow_up_snapshot_fails(self):
+        args = type("Args", (), {
+            "description_stdin": False,
+            "description": "#42 remove footer",
+            "project": "p1",
+            "billable": False,
+        })()
+        ident = clockify.Identity("user", "workspace", "User")
+        api = mock.Mock(good_host="")
+        with (
+            mock.patch.object(
+                clockify,
+                "load_config",
+                return_value={"apiKey": "key", "defaultProjectId": "p1"},
+            ),
+            mock.patch.object(clockify, "open_api", return_value=api),
+            mock.patch.object(clockify, "identity", return_value=ident),
+            mock.patch.object(
+                clockify,
+                "fetch_workspace_details",
+                return_value={"name": "Work", "projectRequired": True},
+            ),
+            mock.patch.object(clockify, "stop_running"),
+            mock.patch.object(clockify, "snapshot", side_effect=clockify.ApiError("offline")),
+        ):
+            with self.assertRaisesRegex(clockify.ApiError, "Timer started") as raised:
+                clockify.cmd_start(args)
+        self.assertEqual(raised.exception.reason, "TIMER_STARTED")
+        api.call.assert_called_once()
+        self.assertEqual(api.call.call_args.args[:2], (
+            "POST", "/workspaces/workspace/time-entries"))
+
+
 class ApiRetries(unittest.TestCase):
     def test_mutation_is_not_replayed_after_ambiguous_timeout(self):
         class Connection:
@@ -275,10 +343,11 @@ class ApiRetries(unittest.TestCase):
 class Payloads(unittest.TestCase):
     def test_base_payload_carries_every_key_the_panel_binds_to(self):
         payload = clockify.base_payload()
-        for key in ("ok", "configured", "error", "note", "running", "todaySeconds",
+        for key in ("ok", "configured", "error", "reason", "note", "running", "todaySeconds",
                     "weekSeconds", "projects", "projectsLoaded", "recentEntries",
                     "historyLoaded", "fetchedAt", "defaultProjectId", "weekStart",
-                    "userName", "workspaceName"):
+                    "userName", "workspaceName", "projectRequired",
+                    "workspaceSettingsLoaded"):
             self.assertIn(key, payload)
 
     def test_unconfigured_keeps_preferences_and_stays_ok(self):

@@ -125,11 +125,14 @@ function rememberRecentEntry(entries, entry, limit) {
 // which Clockify accepts and some workspaces require. `selectedId` keeps a
 // remembered project from rendering as a raw id in the trigger during the
 // moment between the panel opening and the project list arriving.
-function projectOptions(projects, selectedId) {
-  var options = [{ value: "", label: "No project", description: "" }]
+function projectOptions(projects, selectedId, allowNoProject) {
+  var noProjectAllowed = allowNoProject !== false
+  var options = noProjectAllowed
+    ? [{ value: "", label: "No project", description: "" }]
+    : []
   var list = Array.isArray(projects) ? projects : []
   var selected = String(selectedId || "")
-  var matched = selected === ""
+  var matched = selected === "" && noProjectAllowed
   for (var i = 0; i < list.length; i++) {
     var project = list[i] || {}
     var id = String(project.id || "")
@@ -140,7 +143,8 @@ function projectOptions(projects, selectedId) {
       description: String(project.clientName || "")
     })
   }
-  if (!matched) options.push({ value: selected, label: "Selected project", description: "" })
+  if (!matched && selected !== "")
+    options.push({ value: selected, label: "Selected project", description: "" })
   return options
 }
 

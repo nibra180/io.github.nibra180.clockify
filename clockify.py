@@ -48,9 +48,10 @@ HISTORY_PAGE_LIMIT = 5
 class ApiError(Exception):
     """A Clockify call that failed in a way worth showing the user."""
 
-    def __init__(self, message, code=None):
+    def __init__(self, message, code=None, reason=""):
         super().__init__(message)
         self.code = code
+        self.reason = reason
 
 
 class Identity:
@@ -401,15 +402,24 @@ def fetch_projects(workspace_id, api):
     return projects
 
 
-def fetch_workspace_name(workspace_id, api):
-    # Cosmetic only -- a failure here must not cost the user their timer view.
+def fetch_workspace_details(workspace_id, api):
+    workspace = api.call("GET", "/workspaces/%s" % workspace_id) or {}
+    settings = workspace.get("workspaceSettings")
+    if not isinstance(settings, dict):
+        settings = {}
+    return {
+        "name": str(workspace.get("name") or ""),
+        "projectRequired": bool(settings.get("forceProjects")),
+    }
+
+
+def optional_workspace_details(workspace_id, api):
     try:
-        for workspace in api.call("GET", "/workspaces") or []:
-            if str(workspace.get("id") or "") == workspace_id:
-                return str(workspace.get("name") or "")
+        details = fetch_workspace_details(workspace_id, api)
+        details["loaded"] = True
+        return details
     except ApiError:
-        return ""
-    return ""
+        return {"name": "", "projectRequired": False, "loaded": False}
 
 
 def time_entries(ident, api, params):
@@ -506,10 +516,13 @@ def base_payload():
         "ok": True,
         "configured": False,
         "error": "",
+        "reason": "",
         "note": "",
         "userName": "",
         "workspaceId": "",
         "workspaceName": "",
+        "projectRequired": False,
+        "workspaceSettingsLoaded": False,
         "defaultProjectId": "",
         "weekStart": "monday",
         "running": None,
@@ -526,6 +539,11 @@ def base_payload():
 def snapshot(config, api, ident, with_projects=False):
     projects = fetch_projects(ident.workspace_id, api) if with_projects else []
     projects_by_id = {project["id"]: project for project in projects}
+    workspace = (
+        optional_workspace_details(ident.workspace_id, api)
+        if with_projects
+        else {"name": "", "projectRequired": False, "loaded": False}
+    )
     recent_entries = (
         fetch_recent_ticket_entries(ident, api, projects_by_id)
         if with_projects
@@ -559,7 +577,9 @@ def snapshot(config, api, ident, with_projects=False):
         "configured": True,
         "userName": ident.user_name,
         "workspaceId": ident.workspace_id,
-        "workspaceName": fetch_workspace_name(ident.workspace_id, api) if with_projects else "",
+        "workspaceName": workspace["name"],
+        "projectRequired": workspace["projectRequired"],
+        "workspaceSettingsLoaded": workspace["loaded"],
         "defaultProjectId": default_project_id(config),
         "weekStart": first_day,
         "running": running,
@@ -630,22 +650,18 @@ def cmd_start(args):
         return unconfigured(config)
     api = open_api(config)
     ident = identity(identity_config(config), api)
-    stop_running(ident, api)
-
-    body: dict[str, object] = {"start": utc_stamp(now_utc())}
     description = (
         sys.stdin.readline() if args.description_stdin else str(args.description or "")
     ).strip()
-    if description:
-        body["description"] = description
     # An omitted --project falls back to the remembered one; an empty --project
     # is the user deliberately logging time without a project.
     project_id = default_project_id(config) if args.project is None else str(args.project).strip()
-    if project_id:
-        body["projectId"] = project_id
-    if args.billable:
-        body["billable"] = True
-    api.call("POST", "/workspaces/%s/time-entries" % ident.workspace_id, body=body)
+    workspace = fetch_workspace_details(ident.workspace_id, api)
+    if workspace["projectRequired"] and not project_id:
+        raise ApiError(
+            "This workspace requires a project before a timer can start",
+            reason="PROJECT_REQUIRED",
+        )
 
     if (
         not environment_api_key()
@@ -653,10 +669,26 @@ def cmd_start(args):
         and project_id != default_project_id(config)
     ):
         config = update_config({"defaultProjectId": project_id})
-
-    payload = snapshot(config, api, ident)
-    payload["note"] = "Timer started"
     remember_host(config, api)
+
+    stop_running(ident, api)
+    body: dict[str, object] = {"start": utc_stamp(now_utc())}
+    if description:
+        body["description"] = description
+    if project_id:
+        body["projectId"] = project_id
+    if args.billable:
+        body["billable"] = True
+    api.call("POST", "/workspaces/%s/time-entries" % ident.workspace_id, body=body)
+
+    try:
+        payload = snapshot(config, api, ident)
+    except ApiError as error:
+        raise ApiError(
+            "Timer started, but its updated status could not be loaded: %s" % error,
+            reason="TIMER_STARTED",
+        ) from error
+    payload["note"] = "Timer started"
     return payload
 
 
@@ -785,6 +817,7 @@ def main(argv):
         payload = base_payload()
         payload["ok"] = False
         payload["error"] = str(error)
+        payload["reason"] = error.reason
         payload["configured"] = bool(api_key(load_config()))
     except Exception as error:  # a traceback on stdout would break the parser
         payload = base_payload()

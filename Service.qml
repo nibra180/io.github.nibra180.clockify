@@ -15,6 +15,8 @@ Item {
   property string userName: ""
   property string workspaceId: ""
   property string workspaceName: ""
+  property bool projectRequired: false
+  property bool workspaceSettingsLoaded: false
   property var running: null
   property int todaySeconds: 0
   property int weekSeconds: 0
@@ -29,6 +31,7 @@ Item {
   property string fetchedAt: ""
   property int authGeneration: 0
   property bool cacheReloadNeeded: false
+  property bool fullRefreshPending: false
 
   readonly property bool timing: running !== null
   readonly property bool refreshing: statusProcess.running
@@ -37,6 +40,7 @@ Item {
   readonly property bool ready: helperPath !== ""
 
   signal keyRejected(string message)
+  signal timerStarted()
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -52,20 +56,32 @@ Item {
   // ------------------------------------------------------------- commands
 
   function refresh(withProjects) {
-    if (!ready || statusProcess.running) return
+    if (!ready) return
+    if (statusProcess.running) {
+      if (withProjects === true) fullRefreshPending = true
+      return
+    }
+    var fullRefresh = withProjects === true || fullRefreshPending
+    fullRefreshPending = false
     var command = [helperPath, "status"]
-    // The project list is only worth its extra API calls when a panel is about
-    // to show it; the bar refresh runs every minute forever.
-    if (withProjects === true || (!projectsLoaded && configured)) command.push("--projects")
+    // A full refresh loads projects, ticket history, and workspace rules.
+    if (fullRefresh
+        || (configured && (!projectsLoaded || !historyLoaded || !workspaceSettingsLoaded))) {
+      command.push("--projects")
+    }
     statusProcess.authGeneration = root.authGeneration
     statusProcess.command = pythonCommand(command)
     statusProcess.running = true
   }
 
+  function runPendingRefresh() {
+    if (fullRefreshPending) Qt.callLater(function() { root.refresh(true) })
+  }
+
   function start(description, projectId) {
     runAction([helperPath, "start", "--description-stdin",
                "--project", String(projectId === undefined || projectId === null ? "" : projectId)],
-              true, String(description || ""))
+              true, String(description || ""), "start")
   }
 
   function stop() {
@@ -99,14 +115,18 @@ Item {
     historyLoaded = false
     workspaceId = ""
     workspaceName = ""
+    projectRequired = false
+    workspaceSettingsLoaded = false
     defaultProjectId = ""
     cacheReloadNeeded = false
+    fullRefreshPending = false
     runAction([helperPath, "clear-key"])
   }
 
-  function runAction(command, expectsSnapshot, stdinText) {
+  function runAction(command, expectsSnapshot, stdinText, actionKind) {
     if (!ready || actionProcess.running) return
     actionProcess.expectsSnapshot = expectsSnapshot !== false
+    actionProcess.actionKind = String(actionKind || "")
     actionProcess.stdinText = stdinText === undefined ? "" : String(stdinText).replace(/[\r\n]+/g, " ")
     actionProcess.stdinEnabled = stdinText !== undefined
     actionProcess.command = pythonCommand(command)
@@ -142,6 +162,8 @@ Item {
       recentEntries = []
       historyLoaded = false
       workspaceName = ""
+      projectRequired = false
+      workspaceSettingsLoaded = false
     }
     workspaceId = incomingWorkspaceId
 
@@ -163,6 +185,10 @@ Item {
       projectsLoaded = true
       workspaceName = String(payload.workspaceName || "")
     }
+    if (payload.projectsLoaded === true) {
+      workspaceSettingsLoaded = payload.workspaceSettingsLoaded === true
+      if (workspaceSettingsLoaded) projectRequired = payload.projectRequired === true
+    }
     if (payload.historyLoaded === true) {
       recentEntries = Array.isArray(payload.recentEntries) ? payload.recentEntries : []
       historyLoaded = true
@@ -177,6 +203,8 @@ Item {
       historyLoaded = false
       workspaceId = ""
       workspaceName = ""
+      projectRequired = false
+      workspaceSettingsLoaded = false
       userName = ""
     }
     if (note !== "") noteTimer.restart()
@@ -227,13 +255,18 @@ Item {
     stdout: StdioCollector { id: statusOut; waitForEnd: true }
     stderr: StdioCollector { id: statusErr; waitForEnd: true }
     onExited: function(exitCode) {
-      if (authGeneration !== root.authGeneration) return
+      if (authGeneration !== root.authGeneration) {
+        root.runPendingRefresh()
+        return
+      }
       if (exitCode !== 0) {
         root.lastError = root.helperFailure(statusErr.text, exitCode)
+        root.runPendingRefresh()
         return
       }
       root.applyPayload(statusOut.text)
-      if (root.cacheReloadNeeded) Qt.callLater(function() { root.refresh(true) })
+      if (root.cacheReloadNeeded) root.fullRefreshPending = true
+      root.runPendingRefresh()
     }
   }
 
@@ -241,6 +274,7 @@ Item {
     id: actionProcess
     // set-config answers without a snapshot: applying it would blank the state.
     property bool expectsSnapshot: true
+    property string actionKind: ""
     property string stdinText: ""
     running: false
     command: []
@@ -253,6 +287,8 @@ Item {
     stdout: StdioCollector { id: actionOut; waitForEnd: true }
     stderr: StdioCollector { id: actionErr; waitForEnd: true }
     onExited: function(exitCode) {
+      var finishedKind = actionKind
+      actionKind = ""
       stdinText = ""
       stdinEnabled = false
       if (exitCode !== 0) {
@@ -260,7 +296,19 @@ Item {
         return
       }
       if (!expectsSnapshot) return
-      root.applyPayload(actionOut.text)
+      var payload = root.applyPayload(actionOut.text)
+      if (payload.ok === false) {
+        if (finishedKind === "start" && payload.reason === "PROJECT_REQUIRED") {
+          root.projectRequired = true
+          root.workspaceSettingsLoaded = true
+          root.refresh(true)
+        } else if (finishedKind === "start" && payload.reason === "TIMER_STARTED") {
+          root.timerStarted()
+          root.refresh(true)
+        }
+        return
+      }
+      if (finishedKind === "start" && payload.note === "Timer started") root.timerStarted()
       settleTimer.restart()
     }
   }
