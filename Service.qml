@@ -13,18 +13,22 @@ Item {
 
   property bool configured: false
   property string userName: ""
+  property string workspaceId: ""
   property string workspaceName: ""
   property var running: null
   property int todaySeconds: 0
   property int weekSeconds: 0
   property var projects: []
   property bool projectsLoaded: false
+  property var recentEntries: []
+  property bool historyLoaded: false
   property string defaultProjectId: ""
   property string weekStart: "monday"
   property string lastError: ""
   property string note: ""
   property string fetchedAt: ""
   property int authGeneration: 0
+  property bool cacheReloadNeeded: false
 
   readonly property bool timing: running !== null
   readonly property bool refreshing: statusProcess.running
@@ -91,8 +95,12 @@ Item {
     authGeneration += 1
     projects = []
     projectsLoaded = false
+    recentEntries = []
+    historyLoaded = false
+    workspaceId = ""
     workspaceName = ""
     defaultProjectId = ""
+    cacheReloadNeeded = false
     runAction([helperPath, "clear-key"])
   }
 
@@ -124,6 +132,19 @@ Item {
       return payload
     }
 
+    var incomingWorkspaceId = String(payload.workspaceId || "")
+    var workspaceChanged = workspaceId !== ""
+      && incomingWorkspaceId !== ""
+      && workspaceId !== incomingWorkspaceId
+    if (workspaceChanged) {
+      projects = []
+      projectsLoaded = false
+      recentEntries = []
+      historyLoaded = false
+      workspaceName = ""
+    }
+    workspaceId = incomingWorkspaceId
+
     lastError = String(payload.error || "")
     note = String(payload.note || "")
     configured = payload.configured === true
@@ -142,9 +163,19 @@ Item {
       projectsLoaded = true
       workspaceName = String(payload.workspaceName || "")
     }
+    if (payload.historyLoaded === true) {
+      recentEntries = Array.isArray(payload.recentEntries) ? payload.recentEntries : []
+      historyLoaded = true
+    } else if (historyLoaded && note === "Timer started" && running !== null) {
+      recentEntries = Model.rememberRecentEntry(recentEntries, running, 100)
+    }
+    cacheReloadNeeded = configured && workspaceChanged && payload.projectsLoaded !== true
     if (!configured) {
       projects = []
       projectsLoaded = false
+      recentEntries = []
+      historyLoaded = false
+      workspaceId = ""
       workspaceName = ""
       userName = ""
     }
@@ -202,6 +233,7 @@ Item {
         return
       }
       root.applyPayload(statusOut.text)
+      if (root.cacheReloadNeeded) Qt.callLater(function() { root.refresh(true) })
     }
   }
 

@@ -76,6 +76,51 @@ function barTooltip(running, seconds, todaySeconds) {
   return head + " · " + formatClock(seconds) + " · " + today
 }
 
+function ticketNumber(value) {
+  var match = String(value || "").trim().match(/^#(\d+)/)
+  return match ? match[1] : ""
+}
+
+function ticketSuggestions(entries, input, limit) {
+  var query = String(input || "").trim()
+  var ticket = ticketNumber(query)
+  if (ticket === "") return []
+
+  var ticketPrefix = "#" + ticket
+  var queryLower = query.toLowerCase()
+  var preferred = []
+  var other = []
+  var list = Array.isArray(entries) ? entries : []
+
+  for (var i = 0; i < list.length; i++) {
+    var entry = list[i] || {}
+    var description = String(entry.description || "").trim()
+    if (!description.startsWith(ticketPrefix)) continue
+    var next = description.charAt(ticketPrefix.length)
+    if (next >= "0" && next <= "9") continue
+    if (description.toLowerCase().startsWith(queryLower)) preferred.push(entry)
+    else other.push(entry)
+  }
+
+  var maximum = Math.max(1, Number(limit) || 5)
+  return preferred.concat(other).slice(0, maximum)
+}
+
+function rememberRecentEntry(entries, entry, limit) {
+  var description = String((entry || {}).description || "").trim()
+  if (ticketNumber(description) === "") return Array.isArray(entries) ? entries : []
+
+  var remembered = [entry]
+  var key = description.toLowerCase()
+  var list = Array.isArray(entries) ? entries : []
+  for (var i = 0; i < list.length; i++) {
+    var existing = list[i] || {}
+    if (String(existing.description || "").trim().toLowerCase() !== key)
+      remembered.push(existing)
+  }
+  return remembered.slice(0, Math.max(1, Number(limit) || 100))
+}
+
 // Dropdown rows. The empty first option is how the user says "no project",
 // which Clockify accepts and some workspaces require. `selectedId` keeps a
 // remembered project from rendering as a raw id in the trigger during the

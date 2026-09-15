@@ -41,6 +41,8 @@ TIMEOUT = 6
 DEADLINE = 26
 PAGE_SIZE = 200
 PAGE_LIMIT = 5
+HISTORY_LIMIT = 100
+HISTORY_PAGE_LIMIT = 5
 
 
 class ApiError(Exception):
@@ -420,6 +422,52 @@ def time_entries(ident, api, params):
     ) or []
 
 
+def ticket_number(description):
+    text = str(description or "").strip()
+    if not text.startswith("#"):
+        return ""
+    digits = []
+    for character in text[1:]:
+        if not character.isdigit():
+            break
+        digits.append(character)
+    return "".join(digits)
+
+
+def recent_ticket_entries(entries, projects_by_id):
+    views = [entry_view(entry, projects_by_id) for entry in entries]
+    views.sort(key=lambda entry: str(entry["start"]), reverse=True)
+    recent = []
+    seen = set()
+    for view in views:
+        description = str(view["description"] or "").strip()
+        key = description.casefold()
+        if not ticket_number(description) or key in seen:
+            continue
+        seen.add(key)
+        recent.append({
+            "description": description,
+            "projectId": str(view["projectId"] or ""),
+            "projectName": str(view["projectName"] or ""),
+            "clientName": str(view["clientName"] or ""),
+            "lastUsed": str(view["start"] or ""),
+        })
+        if len(recent) >= HISTORY_LIMIT:
+            break
+    return recent
+
+
+def fetch_recent_ticket_entries(ident, api, projects_by_id):
+    entries = []
+    for page in range(1, HISTORY_PAGE_LIMIT + 1):
+        batch = time_entries(ident, api, {"page-size": PAGE_SIZE, "page": page})
+        entries.extend(batch)
+        recent = recent_ticket_entries(entries, projects_by_id)
+        if len(recent) >= HISTORY_LIMIT or len(batch) < PAGE_SIZE:
+            return recent
+    return recent_ticket_entries(entries, projects_by_id)
+
+
 def elapsed_whole_seconds(start, end):
     if not start or not end:
         return 0
@@ -469,6 +517,8 @@ def base_payload():
         "weekSeconds": 0,
         "projects": [],
         "projectsLoaded": False,
+        "recentEntries": [],
+        "historyLoaded": False,
         "fetchedAt": "",
     }
 
@@ -476,6 +526,11 @@ def base_payload():
 def snapshot(config, api, ident, with_projects=False):
     projects = fetch_projects(ident.workspace_id, api) if with_projects else []
     projects_by_id = {project["id"]: project for project in projects}
+    recent_entries = (
+        fetch_recent_ticket_entries(ident, api, projects_by_id)
+        if with_projects
+        else []
+    )
 
     running_entries = time_entries(ident, api, {"in-progress": "true"})
     running = entry_view(running_entries[0], projects_by_id) if running_entries else None
@@ -512,6 +567,8 @@ def snapshot(config, api, ident, with_projects=False):
         "weekSeconds": sum(e["seconds"] for e in finished if str(e["start"]) >= week_stamp),
         "projects": projects,
         "projectsLoaded": bool(with_projects),
+        "recentEntries": recent_entries,
+        "historyLoaded": bool(with_projects),
         "fetchedAt": utc_stamp(moment),
     })
     return payload

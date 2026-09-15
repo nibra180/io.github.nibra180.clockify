@@ -88,6 +88,51 @@ class EntryView(unittest.TestCase):
         self.assertEqual(view["projectName"], "From list")
         self.assertEqual(view["clientName"], "ACME")
 
+    def test_recent_ticket_entries_are_deduplicated_and_newest_first(self):
+        entries = [
+            entry("2026-08-17T09:00:00Z", "2026-08-17T10:00:00Z", "#42 remove footer", "old"),
+            entry("2026-08-19T09:00:00Z", "2026-08-19T10:00:00Z", "#42 remove footer", "new"),
+            entry("2026-08-18T09:00:00Z", "2026-08-18T10:00:00Z", "#7 fix checkout", "p7"),
+            entry("2026-08-20T09:00:00Z", "2026-08-20T10:00:00Z", "Daily meeting", "meeting"),
+        ]
+        recent = clockify.recent_ticket_entries(entries, {})
+        self.assertEqual([item["description"] for item in recent], [
+            "#42 remove footer",
+            "#7 fix checkout",
+        ])
+        self.assertEqual(recent[0]["projectId"], "new")
+
+    def test_ticket_number_requires_a_leading_hash_and_digits(self):
+        self.assertEqual(clockify.ticket_number("#42 remove footer"), "42")
+        self.assertEqual(clockify.ticket_number("  #7 fix checkout"), "7")
+        self.assertEqual(clockify.ticket_number("Ticket #42"), "")
+        self.assertEqual(clockify.ticket_number("# no number"), "")
+
+    def test_ticket_history_reads_later_pages(self):
+        class ApiStub:
+            def __init__(self):
+                self.pages = []
+
+            def call(self, method, path, params=None):
+                page = (params or {})["page"]
+                self.pages.append(page)
+                if page == 1:
+                    return [
+                        entry("2026-08-20T09:00:00Z", "2026-08-20T09:01:00Z", "Daily meeting")
+                        for _ in range(clockify.PAGE_SIZE)
+                    ]
+                return [entry(
+                    "2026-08-19T09:00:00Z",
+                    "2026-08-19T10:00:00Z",
+                    "#42 remove footer",
+                )]
+
+        api = ApiStub()
+        ident = clockify.Identity("user", "workspace", "User")
+        recent = clockify.fetch_recent_ticket_entries(ident, api, {})
+        self.assertEqual(api.pages, [1, 2])
+        self.assertEqual(recent[0]["description"], "#42 remove footer")
+
 
 class ConfigStorage(unittest.TestCase):
     def setUp(self):
@@ -231,8 +276,9 @@ class Payloads(unittest.TestCase):
     def test_base_payload_carries_every_key_the_panel_binds_to(self):
         payload = clockify.base_payload()
         for key in ("ok", "configured", "error", "note", "running", "todaySeconds",
-                    "weekSeconds", "projects", "projectsLoaded", "fetchedAt",
-                    "defaultProjectId", "weekStart", "userName", "workspaceName"):
+                    "weekSeconds", "projects", "projectsLoaded", "recentEntries",
+                    "historyLoaded", "fetchedAt", "defaultProjectId", "weekStart",
+                    "userName", "workspaceName"):
             self.assertIn(key, payload)
 
     def test_unconfigured_keeps_preferences_and_stays_ok(self):

@@ -38,6 +38,19 @@ Panel {
   // typing here describes the *next* task, which Start switches over to.
   property string draftDescription: ""
   property string draftProjectId: ""
+  property int descriptionSuggestionIndex: 0
+  property bool descriptionSuggestionsDismissed: false
+  readonly property var descriptionSuggestions: descriptionSuggestionsDismissed
+    ? []
+    : Model.ticketSuggestions(clockify.recentEntries, draftDescription, 5)
+  readonly property bool descriptionSuggestionsVisible: descriptionField.activeFocus
+    && descriptionSuggestions.length > 0
+
+  onDescriptionSuggestionsChanged: {
+    descriptionSuggestionIndex = Math.min(
+      descriptionSuggestionIndex,
+      Math.max(0, descriptionSuggestions.length - 1))
+  }
 
   // Panel cursor. Sections are recomputed from state, so the login form and the
   // form fields are all just entries in one flat list.
@@ -89,6 +102,25 @@ Panel {
   function clearDraftDescription() {
     draftDescription = ""
     descriptionField.text = ""
+    descriptionSuggestionsDismissed = true
+  }
+
+  function selectableProjectId(projectId) {
+    var wanted = String(projectId || "")
+    if (wanted === "") return ""
+    for (var i = 0; i < clockify.projects.length; i++) {
+      if (String((clockify.projects[i] || {}).id || "") === wanted) return wanted
+    }
+    return ""
+  }
+
+  function pickDescriptionSuggestion(suggestion) {
+    if (!suggestion) return
+    descriptionField.text = String(suggestion.description || "")
+    draftProjectId = selectableProjectId(suggestion.projectId)
+    descriptionSuggestionsDismissed = true
+    descriptionField.forceActiveFocus()
+    descriptionField.cursorPosition = descriptionField.text.length
   }
 
   function commitKey() {
@@ -110,6 +142,8 @@ Panel {
     cursorIndex = 0
     if (panelFlick) panelFlick.contentY = 0
     draftProjectId = clockify.defaultProjectId
+    descriptionSuggestionIndex = 0
+    descriptionSuggestionsDismissed = false
     clockify.refresh(true)
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
@@ -131,6 +165,9 @@ Panel {
   Connections {
     target: clockify
     function onDefaultProjectIdChanged() {
+      root.draftProjectId = clockify.defaultProjectId
+    }
+    function onWorkspaceIdChanged() {
       root.draftProjectId = clockify.defaultProjectId
     }
   }
@@ -168,6 +205,7 @@ Panel {
         todaySeconds: root.todaySeconds,
         weekSeconds: root.weekSeconds,
         projectCount: clockify.projects.length,
+        historyCount: clockify.recentEntries.length,
         fetchedAt: clockify.fetchedAt,
         lastError: clockify.lastError,
         helperPath: root.helperPath
@@ -360,19 +398,97 @@ Panel {
               font.family: root.fontFamily
               enabled: !clockify.actionBusy
               hasCursor: !activeFocus && root.sectionHasCursor("description")
-              onTextChanged: root.draftDescription = text
-              onHoveredChanged: if (hovered) root.focusSection("description")
-              // Enter starts timing this description straight away, switching
-              // off whatever was running.
-              onAccepted: {
-                focus = false
-                clockify.start(root.draftDescription, root.draftProjectId)
-                root.clearDraftDescription()
+              onTextChanged: {
+                root.draftDescription = text
+                root.descriptionSuggestionIndex = 0
+                root.descriptionSuggestionsDismissed = false
               }
+              onHoveredChanged: if (hovered) root.focusSection("description")
               Keys.onPressed: function(event) {
-                if (event.key === Qt.Key_Escape) {
-                  focus = false
+                if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                   event.accepted = true
+                  if (event.isAutoRepeat) return
+                  if (root.descriptionSuggestionsVisible) {
+                    root.pickDescriptionSuggestion(root.descriptionSuggestions[root.descriptionSuggestionIndex])
+                    return
+                  }
+                  focus = false
+                  clockify.start(root.draftDescription, root.draftProjectId)
+                  root.clearDraftDescription()
+                } else if (event.key === Qt.Key_Escape) {
+                  if (root.descriptionSuggestionsVisible) root.descriptionSuggestionsDismissed = true
+                  else focus = false
+                  event.accepted = true
+                } else if (event.key === Qt.Key_Down && root.descriptionSuggestionsVisible) {
+                  root.descriptionSuggestionIndex = Math.min(
+                    root.descriptionSuggestions.length - 1,
+                    root.descriptionSuggestionIndex + 1)
+                  event.accepted = true
+                } else if (event.key === Qt.Key_Up && root.descriptionSuggestionsVisible) {
+                  root.descriptionSuggestionIndex = Math.max(0, root.descriptionSuggestionIndex - 1)
+                  event.accepted = true
+                }
+              }
+            }
+
+            Column {
+              visible: root.descriptionSuggestionsVisible
+              width: parent.width
+              spacing: 0
+
+              Repeater {
+                model: root.descriptionSuggestions
+
+                Rectangle {
+                  required property var modelData
+                  required property int index
+                  width: parent.width
+                  height: suggestionContent.implicitHeight + Style.space(12)
+                  radius: Style.cornerRadius
+                  color: index === root.descriptionSuggestionIndex
+                    ? Style.hoverFillFor(root.foreground, Color.accent)
+                    : "transparent"
+
+                  RowLayout {
+                    id: suggestionContent
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.leftMargin: Style.space(12)
+                    anchors.rightMargin: Style.space(12)
+                    spacing: Style.space(8)
+
+                    Text {
+                      Layout.fillWidth: true
+                      textFormat: Text.PlainText
+                      text: String(modelData.description || "")
+                      color: index === root.descriptionSuggestionIndex
+                        ? Style.hoverStateColor(root.foreground, Color.accent)
+                        : root.foreground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.body
+                      elide: Text.ElideRight
+                    }
+
+                    Text {
+                      visible: text !== ""
+                      textFormat: Text.PlainText
+                      text: String(modelData.projectName || "")
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      elide: Text.ElideRight
+                      Layout.maximumWidth: parent.width * 0.35
+                    }
+                  }
+
+                  MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onPositionChanged: root.descriptionSuggestionIndex = index
+                    onClicked: root.pickDescriptionSuggestion(modelData)
+                  }
                 }
               }
             }
