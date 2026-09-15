@@ -95,6 +95,7 @@ Panel {
   }
 
   function startDraftTimer() {
+    if (clockify.actionBusy) return
     if (!clockify.workspaceSettingsLoaded) {
       draftError = "Loading workspace rules before starting…"
       if (!opened) open()
@@ -148,6 +149,20 @@ Panel {
     descriptionSuggestionsDismissed = true
     descriptionField.forceActiveFocus()
     descriptionField.cursorPosition = descriptionField.text.length
+  }
+
+  function restartTask(task) {
+    if (!task || clockify.actionBusy) return
+    draftDescription = String(task.description || "")
+    descriptionField.text = draftDescription
+    var previousProjectId = String(task.projectId || "")
+    draftProjectId = selectableProjectId(previousProjectId)
+    if (previousProjectId !== "" && draftProjectId === "") {
+      draftError = "This task's project is no longer available. Choose another project."
+      Qt.callLater(function() { projectDropdown.open() })
+      return
+    }
+    startDraftTimer()
   }
 
   function commitKey() {
@@ -617,6 +632,95 @@ Panel {
 
           PanelSeparator {
             visible: clockify.configured
+            foreground: root.foreground
+          }
+
+          // -------------------------------------------------- recent tasks
+
+          Column {
+            visible: clockify.configured && clockify.recentTasks.length > 0
+            width: parent.width
+            spacing: Style.space(4)
+
+            PanelSectionHeader {
+              text: "RECENT TASKS"
+              foreground: root.foreground
+            }
+
+            Repeater {
+              model: clockify.recentTasks.slice(0, 3)
+
+              Rectangle {
+                required property var modelData
+                width: parent.width
+                height: recentTaskContent.implicitHeight + Style.space(12)
+                radius: Style.cornerRadius
+                color: recentTaskMouse.containsMouse
+                  ? Style.hoverFillFor(root.foreground, Color.accent)
+                  : "transparent"
+
+                RowLayout {
+                  id: recentTaskContent
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  anchors.leftMargin: Style.space(12)
+                  anchors.rightMargin: Style.space(12)
+                  spacing: Style.space(8)
+
+                  ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: Style.space(1)
+
+                    Text {
+                      Layout.fillWidth: true
+                      text: String(modelData.description || "")
+                      textFormat: Text.PlainText
+                      color: recentTaskMouse.containsMouse
+                        ? Style.hoverStateColor(root.foreground, Color.accent)
+                        : root.foreground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.body
+                      elide: Text.ElideRight
+                    }
+
+                    Text {
+                      visible: text !== ""
+                      Layout.fillWidth: true
+                      text: Model.projectLabel(modelData)
+                      textFormat: Text.PlainText
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      elide: Text.ElideRight
+                    }
+                  }
+
+                  Text {
+                    text: "Start"
+                    color: recentTaskMouse.containsMouse
+                      ? Style.hoverStateColor(root.foreground, Color.accent)
+                      : root.runningColor
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                  }
+                }
+
+                MouseArea {
+                  id: recentTaskMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  enabled: !clockify.actionBusy
+                  onClicked: root.restartTask(modelData)
+                }
+              }
+            }
+          }
+
+          PanelSeparator {
+            visible: clockify.configured && clockify.recentTasks.length > 0
             foreground: root.foreground
           }
 

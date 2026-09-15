@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.nibra180.clockify",
   "name": "Clockify",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "author": "nibra180, based on matyssxdxd/clockify",
   "license": "MIT",
   "description": "Start, stop, and watch your Clockify timer from the Omarchy bar.",
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "Clockify",
-    "description": "Shows the live timer in the bar, with a panel to start and stop it.",
+    "description": "Shows the live timer in the bar and restarts recent tasks from the panel.",
     "category": "Time",
     "allowMultiple": false,
     "defaultSection": "right",

@@ -23,6 +23,7 @@ Item {
   property var projects: []
   property bool projectsLoaded: false
   property var recentEntries: []
+  property var recentTasks: []
   property bool historyLoaded: false
   property string defaultProjectId: ""
   property string weekStart: "monday"
@@ -32,6 +33,7 @@ Item {
   property int authGeneration: 0
   property bool cacheReloadNeeded: false
   property bool fullRefreshPending: false
+  property bool settleFullRefresh: false
 
   readonly property bool timing: running !== null
   readonly property bool refreshing: statusProcess.running
@@ -85,7 +87,7 @@ Item {
   }
 
   function stop() {
-    runAction([helperPath, "stop"])
+    runAction([helperPath, "stop"], true, undefined, "stop")
   }
 
   function rememberProject(projectId) {
@@ -112,6 +114,7 @@ Item {
     projects = []
     projectsLoaded = false
     recentEntries = []
+    recentTasks = []
     historyLoaded = false
     workspaceId = ""
     workspaceName = ""
@@ -120,6 +123,7 @@ Item {
     defaultProjectId = ""
     cacheReloadNeeded = false
     fullRefreshPending = false
+    settleFullRefresh = false
     runAction([helperPath, "clear-key"])
   }
 
@@ -160,6 +164,7 @@ Item {
       projects = []
       projectsLoaded = false
       recentEntries = []
+      recentTasks = []
       historyLoaded = false
       workspaceName = ""
       projectRequired = false
@@ -191,6 +196,7 @@ Item {
     }
     if (payload.historyLoaded === true) {
       recentEntries = Array.isArray(payload.recentEntries) ? payload.recentEntries : []
+      recentTasks = Array.isArray(payload.recentTasks) ? payload.recentTasks : []
       historyLoaded = true
     } else if (historyLoaded && note === "Timer started" && running !== null) {
       recentEntries = Model.rememberRecentEntry(recentEntries, running, 100)
@@ -200,6 +206,7 @@ Item {
       projects = []
       projectsLoaded = false
       recentEntries = []
+      recentTasks = []
       historyLoaded = false
       workspaceId = ""
       workspaceName = ""
@@ -237,7 +244,11 @@ Item {
     id: settleTimer
     interval: 2500
     repeat: false
-    onTriggered: root.refresh(false)
+    onTriggered: {
+      var withHistory = root.settleFullRefresh
+      root.settleFullRefresh = false
+      root.refresh(withHistory)
+    }
   }
 
   Timer {
@@ -304,11 +315,16 @@ Item {
           root.refresh(true)
         } else if (finishedKind === "start" && payload.reason === "TIMER_STARTED") {
           root.timerStarted()
-          root.refresh(true)
+          root.refresh(false)
+          root.settleFullRefresh = true
+          settleTimer.restart()
         }
         return
       }
       if (finishedKind === "start" && payload.note === "Timer started") root.timerStarted()
+      root.settleFullRefresh = root.settleFullRefresh
+        || finishedKind === "start"
+        || finishedKind === "stop"
       settleTimer.restart()
     }
   }

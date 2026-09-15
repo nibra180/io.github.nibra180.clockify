@@ -67,6 +67,10 @@ project is remembered as the default for the next start. If the workspace
 requires projects, the plugin asks for one before starting instead of creating
 a timer that Clockify later refuses to stop.
 
+The panel lists the three most recent completed tasks. Click one to start it
+again with the same description and project. If that project is no longer
+available, the panel asks you to choose another one.
+
 Descriptions that begin with a ticket number are remembered from recent entries.
 Type `#42` to see earlier `#42 ...` descriptions. Pick one with the mouse or the
 arrow keys and `Enter`; the plugin fills in its description and active project.

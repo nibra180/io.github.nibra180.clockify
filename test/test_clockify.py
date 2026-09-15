@@ -102,6 +102,20 @@ class EntryView(unittest.TestCase):
         ])
         self.assertEqual(recent[0]["projectId"], "new")
 
+    def test_recent_tasks_are_finished_unique_entries_in_newest_order(self):
+        entries = [
+            entry("2026-08-20T09:00:00Z", None, "Currently running", "p1"),
+            entry("2026-08-19T09:00:00Z", "2026-08-19T10:00:00Z", "Daily meeting", "p1"),
+            entry("2026-08-18T09:00:00Z", "2026-08-18T10:00:00Z", "Daily meeting", "p1"),
+            entry("2026-08-17T09:00:00Z", "2026-08-17T10:00:00Z", "Daily meeting", "p2"),
+            entry("2026-08-16T09:00:00Z", "2026-08-16T10:00:00Z", "", "p3"),
+        ]
+        recent = clockify.recent_task_entries(entries, {})
+        self.assertEqual([(item["description"], item["projectId"]) for item in recent], [
+            ("Daily meeting", "p1"),
+            ("Daily meeting", "p2"),
+        ])
+
     def test_ticket_number_requires_a_leading_hash_and_digits(self):
         self.assertEqual(clockify.ticket_number("#42 remove footer"), "42")
         self.assertEqual(clockify.ticket_number("  #7 fix checkout"), "7")
@@ -129,9 +143,12 @@ class EntryView(unittest.TestCase):
 
         api = ApiStub()
         ident = clockify.Identity("user", "workspace", "User")
-        recent = clockify.fetch_recent_ticket_entries(ident, api, {})
+        history = clockify.fetch_recent_history(ident, api, {})
         self.assertEqual(api.pages, [1, 2])
-        self.assertEqual(recent[0]["description"], "#42 remove footer")
+        self.assertEqual(history["ticketEntries"][0]["description"], "#42 remove footer")
+        self.assertEqual([task["description"] for task in history["tasks"]], [
+            "Daily meeting", "#42 remove footer",
+        ])
 
 
 class ConfigStorage(unittest.TestCase):
@@ -345,7 +362,7 @@ class Payloads(unittest.TestCase):
         payload = clockify.base_payload()
         for key in ("ok", "configured", "error", "reason", "note", "running", "todaySeconds",
                     "weekSeconds", "projects", "projectsLoaded", "recentEntries",
-                    "historyLoaded", "fetchedAt", "defaultProjectId", "weekStart",
+                    "recentTasks", "historyLoaded", "fetchedAt", "defaultProjectId", "weekStart",
                     "userName", "workspaceName", "projectRequired",
                     "workspaceSettingsLoaded"):
             self.assertIn(key, payload)
