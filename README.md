@@ -1,5 +1,9 @@
 # Clockify for Omarchy
 
+This fork of [matyssxdxd/clockify](https://github.com/matyssxdxd/clockify)
+hardens local API-key storage, concurrent updates, network retries, and handling
+of text received from Clockify.
+
 A [Clockify](https://clockify.me) timer in the Omarchy bar. The pill is one
 glyph -- bold while a timer runs -- and the panel starts and stops it, picks a
 project, and totals the day and the week.
@@ -15,15 +19,15 @@ Hover it for the running task, its elapsed time, and today's total.
 ## Install
 
 ```sh
-omarchy plugin add https://github.com/matyssxdxd/io.github.matyssxdxd.clockify.git --enable
+omarchy plugin add https://github.com/nibra180/io.github.nibra180.clockify.git --enable
 ```
 
 Or, while developing it locally, drop the folder in
-`~/.config/omarchy/plugins/io.github.matyssxdxd.clockify/` and enable it:
+`~/.config/omarchy/plugins/io.github.nibra180.clockify/` and enable it:
 
 ```sh
-omarchy plugin validate ~/.config/omarchy/plugins/io.github.matyssxdxd.clockify
-omarchy plugin enable io.github.matyssxdxd.clockify
+omarchy plugin validate ~/.config/omarchy/plugins/io.github.nibra180.clockify
+omarchy plugin enable io.github.nibra180.clockify
 ```
 
 Needs `python3` (Omarchy ships it) and nothing else.
@@ -34,13 +38,14 @@ Click the pill, paste your API key, press Connect. The key comes from Clockify �
 **Preferences → Advanced → API**.
 
 It is stored in `~/.config/omarchy/clockify.json` with mode `0600`, and the
-plugin validates it against Clockify before writing it. `$CLOCKIFY_API_KEY` is
-used instead when set, so a key you already manage elsewhere (a password
-manager, an `age`-encrypted env file) needs no copy on disk. The key is never
-passed as a command-line argument — it reaches the helper over stdin and is read
-back from the config file — so it does not show up in `ps` for other users.
+plugin validates it against Clockify before writing it. `$CLOCKIFY_API_KEY`
+takes precedence when set, so a key you already manage elsewhere (a password
+manager, an `age`-encrypted env file) needs no copy on disk. The panel sends API
+keys and task descriptions to the helper over stdin, not command-line arguments,
+so they do not show up in `ps` for other users.
 
-The trailing key button in the panel footer forgets a stored key again.
+The trailing key button in the panel footer forgets a stored key. It cannot
+remove a key supplied through `$CLOCKIFY_API_KEY`.
 
 ## Use
 
@@ -77,19 +82,19 @@ in `~/.config/omarchy/shell.json` under the widget's entry):
 Move the widget:
 
 ```sh
-omarchy bar move io.github.matyssxdxd.clockify --section center
+omarchy bar move io.github.nibra180.clockify --section center
 ```
 
 ## Shell commands
 
 ```sh
-omarchy-shell shell summon io.github.matyssxdxd.clockify '{}'   # open the panel
-omarchy-shell shell hide io.github.matyssxdxd.clockify
-omarchy-shell io.github.matyssxdxd.clockify toggleTimer
-omarchy-shell io.github.matyssxdxd.clockify startTimer "Writing docs" ""
-omarchy-shell io.github.matyssxdxd.clockify stopTimer
-omarchy-shell io.github.matyssxdxd.clockify status                # one-line summary
-omarchy-shell io.github.matyssxdxd.clockify debug                 # JSON state of one widget
+omarchy-shell shell summon io.github.nibra180.clockify '{}'   # open the panel
+omarchy-shell shell hide io.github.nibra180.clockify
+omarchy-shell io.github.nibra180.clockify toggleTimer
+omarchy-shell io.github.nibra180.clockify startTimer "Writing docs" ""
+omarchy-shell io.github.nibra180.clockify stopTimer
+omarchy-shell io.github.nibra180.clockify status                # one-line summary
+omarchy-shell io.github.nibra180.clockify debug                 # JSON state of one widget
 ```
 
 `status`/`debug` answer from whichever monitor's widget owns the IPC target —
@@ -151,14 +156,14 @@ publishing. To list it on [omarchyplugins.com](https://omarchyplugins.com):
    [omarchyplugins.com/publish.html](https://omarchyplugins.com/publish.html),
    with the repo link, a category, and tags.
 
-The marketplace validates listings, not security — plugins run unsandboxed, so
-the code, assets, docs, and license here are mine to stand behind.
+The marketplace validates listings, not security. Plugins run unsandboxed, so
+review upstream changes before merging them into this fork.
 
 ## Remove
 
 ```sh
-omarchy plugin disable io.github.matyssxdxd.clockify   # keep it installed, off the bar
-omarchy plugin remove io.github.matyssxdxd.clockify    # and delete the folder
+omarchy plugin disable io.github.nibra180.clockify   # keep it installed, off the bar
+omarchy plugin remove io.github.nibra180.clockify    # and delete the folder
 rm ~/.config/omarchy/clockify.json       # and forget the API key
 ```
 

@@ -12,8 +12,8 @@ import "Model.js" as Model
 // it, stops it, and totals the day and the week.
 Panel {
   id: root
-  moduleName: "io.github.matyssxdxd.clockify"
-  ipcTarget: "io.github.matyssxdxd.clockify"
+  moduleName: "io.github.nibra180.clockify"
+  ipcTarget: "io.github.nibra180.clockify"
   manageIpc: false
 
   // The helper lives next to this file. Resolving it off the component URL
@@ -131,7 +131,7 @@ Panel {
   Connections {
     target: clockify
     function onDefaultProjectIdChanged() {
-      if (root.draftProjectId === "") root.draftProjectId = clockify.defaultProjectId
+      root.draftProjectId = clockify.defaultProjectId
     }
   }
 
@@ -274,6 +274,7 @@ Panel {
             visible: root.statusText !== ""
             width: parent.width
             text: root.statusText
+            textFormat: Text.PlainText
             color: root.statusIsError ? root.urgent : root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -453,6 +454,7 @@ Panel {
             Text {
               Layout.fillWidth: true
               text: "󰀄  " + clockify.userName + (clockify.workspaceName === "" ? "" : "  ·  " + clockify.workspaceName)
+              textFormat: Text.PlainText
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption

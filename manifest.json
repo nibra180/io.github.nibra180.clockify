@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "io.github.matyssxdxd.clockify",
+  "id": "io.github.nibra180.clockify",
   "name": "Clockify",
-  "version": "1.0.0",
-  "author": "matyss",
+  "version": "1.0.1",
+  "author": "nibra180, based on matyssxdxd/clockify",
   "license": "MIT",
   "description": "Start, stop, and watch your Clockify timer from the Omarchy bar.",
   "kinds": [

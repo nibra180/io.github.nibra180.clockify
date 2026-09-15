@@ -7,10 +7,15 @@ No network and no API key: everything here works on synthetic entries, which is
 exactly where the date arithmetic and the task grouping tend to go wrong.
 """
 
+import io
 import os
+import socket
+import stat
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timezone
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -82,6 +87,144 @@ class EntryView(unittest.TestCase):
         view = clockify.entry_view(raw, {"p1": {"name": "From list", "color": "", "clientName": "ACME"}})
         self.assertEqual(view["projectName"], "From list")
         self.assertEqual(view["clientName"], "ACME")
+
+
+class ConfigStorage(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.environment = mock.patch.dict(
+            os.environ,
+            {"XDG_CONFIG_HOME": self.temporary.name},
+            clear=True,
+        )
+        self.environment.start()
+
+    def tearDown(self):
+        self.environment.stop()
+        self.temporary.cleanup()
+
+    def test_save_uses_private_files_and_leaves_no_temporary_key_file(self):
+        clockify.save_config({"apiKey": "secret"})
+        path = clockify.config_path()
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(clockify.load_config()["apiKey"], "secret")
+        self.assertEqual(list(path.parent.glob(".clockify-*.tmp")), [])
+
+    def test_host_refresh_does_not_restore_a_removed_key(self):
+        clockify.save_config({"apiKey": "old-key", "weekStart": "sunday"})
+        stale = clockify.load_config()
+        clockify.update_config(removals=("apiKey", "workspaceId"))
+        clockify.remember_host(stale, type("ApiStub", (), {"good_host": "203.0.113.8"})())
+        current = clockify.load_config()
+        self.assertNotIn("apiKey", current)
+        self.assertEqual(current["apiHost"], "203.0.113.8")
+        self.assertEqual(current["weekStart"], "sunday")
+
+    def test_environment_key_takes_precedence(self):
+        os.environ["CLOCKIFY_API_KEY"] = "environment"
+        config = {"apiKey": "stored", "workspaceId": "stored-workspace", "defaultProjectId": "old"}
+        self.assertEqual(clockify.api_key(config), "environment")
+        self.assertEqual(clockify.identity_config(config), {})
+        self.assertEqual(clockify.default_project_id(config), "")
+
+    def test_set_key_rejects_a_key_shadowed_by_the_environment(self):
+        os.environ["CLOCKIFY_API_KEY"] = "environment"
+        with mock.patch("sys.stdin", io.StringIO("pasted\n")):
+            payload = clockify.cmd_set_key(None)
+        self.assertFalse(payload["ok"])
+        self.assertTrue(payload["configured"])
+        self.assertIn("CLOCKIFY_API_KEY", payload["error"])
+
+    def test_workspace_change_drops_the_previous_default_project(self):
+        clockify.save_config({
+            "workspaceId": "old-workspace",
+            "defaultProjectId": "old-project",
+        })
+        args = type("Args", (), {
+            "project": None,
+            "workspace": "new-workspace",
+            "week_start": None,
+        })()
+        clockify.cmd_set_config(args)
+        self.assertEqual(clockify.load_config()["workspaceId"], "new-workspace")
+        self.assertNotIn("defaultProjectId", clockify.load_config())
+
+    def test_new_account_drops_the_previous_default_project(self):
+        clockify.save_config({
+            "apiKey": "old-key",
+            "workspaceId": "old-workspace",
+            "defaultProjectId": "old-project",
+        })
+        ident = clockify.Identity("user", "new-workspace", "User")
+        refreshed = clockify.base_payload()
+        refreshed["configured"] = True
+        with (
+            mock.patch("sys.stdin", io.StringIO("new-key\n")),
+            mock.patch.object(clockify, "Api", return_value=object()),
+            mock.patch.object(clockify, "identity", return_value=ident),
+            mock.patch.object(clockify, "snapshot", return_value=refreshed),
+            mock.patch.object(clockify, "remember_host"),
+        ):
+            payload = clockify.cmd_set_key(None)
+        self.assertTrue(payload["ok"])
+        self.assertNotIn("defaultProjectId", clockify.load_config())
+
+    def test_clear_key_refreshes_environment_account_projects(self):
+        os.environ["CLOCKIFY_API_KEY"] = "environment"
+        clockify.save_config({
+            "apiKey": "stored",
+            "workspaceId": "old-workspace",
+            "defaultProjectId": "old-project",
+        })
+        api = object()
+        ident = clockify.Identity("user", "environment-workspace", "User")
+        refreshed = clockify.base_payload()
+        refreshed.update({"configured": True, "projectsLoaded": True, "projects": [{"id": "new"}]})
+        with (
+            mock.patch.object(clockify, "open_api", return_value=api),
+            mock.patch.object(clockify, "identity", return_value=ident),
+            mock.patch.object(clockify, "snapshot", return_value=refreshed),
+            mock.patch.object(clockify, "remember_host"),
+        ):
+            payload = clockify.cmd_clear_key(None)
+        self.assertTrue(payload["projectsLoaded"])
+        self.assertEqual(payload["projects"], [{"id": "new"}])
+        self.assertNotIn("apiKey", clockify.load_config())
+        self.assertNotIn("workspaceId", clockify.load_config())
+        self.assertNotIn("defaultProjectId", clockify.load_config())
+
+
+class ApiRetries(unittest.TestCase):
+    def test_mutation_is_not_replayed_after_ambiguous_timeout(self):
+        class Connection:
+            def __init__(self):
+                self.requests = 0
+
+            def request(self, method, target, payload, headers):
+                self.requests += 1
+
+            def getresponse(self):
+                raise socket.timeout("lost response")
+
+            def close(self):
+                pass
+
+        connection = Connection()
+        api = object.__new__(clockify.Api)
+        api.key = "secret"
+        api.addresses = [
+            (socket.AF_INET, ("192.0.2.1", 443)),
+            (socket.AF_INET, ("192.0.2.2", 443)),
+        ]
+        api.connection = None
+        api.address = None
+        api.preferred = ""
+        api.good_host = ""
+
+        with mock.patch.object(clockify.Api, "_open", return_value=connection):
+            with self.assertRaisesRegex(clockify.ApiError, "may have applied"):
+                api.call("POST", "/workspaces/workspace/time-entries", body={"start": "now"})
+        self.assertEqual(connection.requests, 1)
 
 
 class Payloads(unittest.TestCase):

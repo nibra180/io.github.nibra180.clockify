@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Clockify bridge for the io.github.matyssxdxd.clockify Omarchy plugin.
+"""Clockify bridge for the io.github.nibra180.clockify Omarchy plugin.
 
 Every subcommand prints exactly one JSON object on stdout and exits 0, even
 when Clockify refuses the call, so the QML side has a single shape to parse and
@@ -17,13 +17,16 @@ Usable by hand while developing the plugin:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import http.client
 import json
 import os
 import socket
 import ssl
 import sys
+import tempfile
 import urllib.parse
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
@@ -73,22 +76,84 @@ def load_config():
     return data if isinstance(data, dict) else {}
 
 
-def save_config(config):
+@contextmanager
+def config_lock():
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    # 0600 from creation, not after: the key it holds can read and rewrite every
-    # time entry in the workspace, so it must never exist as a readable file.
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        json.dump(config, handle, indent=2, sort_keys=True)
-        handle.write("\n")
-    os.replace(temporary, path)
-    os.chmod(path, 0o600)
+    lock_path = path.with_name(path.name + ".lock")
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(lock_path, flags, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def _save_config(config):
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=".clockify-", suffix=".tmp", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            json.dump(config, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def save_config(config):
+    with config_lock():
+        _save_config(config)
+
+
+def update_config(changes=None, removals=(), reset_project_for_workspace=False):
+    with config_lock():
+        config = load_config()
+        values = changes or {}
+        if (
+            reset_project_for_workspace
+            and "workspaceId" in values
+            and values["workspaceId"] != str(config.get("workspaceId") or "")
+            and "defaultProjectId" not in values
+        ):
+            config.pop("defaultProjectId", None)
+        config.update(values)
+        for key in removals:
+            config.pop(key, None)
+        _save_config(config)
+        return config
+
+
+def environment_api_key():
+    return str(os.environ.get("CLOCKIFY_API_KEY") or "").strip()
 
 
 def api_key(config):
-    return str(config.get("apiKey") or os.environ.get("CLOCKIFY_API_KEY") or "").strip()
+    return environment_api_key() or str(config.get("apiKey") or "").strip()
+
+
+def identity_config(config):
+    return {} if environment_api_key() else config
+
+
+def default_project_id(config):
+    return "" if environment_api_key() else str(config.get("defaultProjectId") or "")
 
 
 # -------------------------------------------------------------------- http
@@ -133,10 +198,14 @@ class Api:
 
     def _open(self, family, sockaddr):
         raw = socket.socket(family, socket.SOCK_STREAM)
-        raw.settimeout(TIMEOUT)
-        raw.connect(sockaddr)
-        context = ssl.create_default_context()
-        secure = context.wrap_socket(raw, server_hostname=HOST)
+        try:
+            raw.settimeout(TIMEOUT)
+            raw.connect(sockaddr)
+            context = ssl.create_default_context()
+            secure = context.wrap_socket(raw, server_hostname=HOST)
+        except Exception:
+            raw.close()
+            raise
         # http.client does the HTTP framing; the socket is already connected and
         # wrapped, so hand it the finished one rather than let it dial again.
         connection = http.client.HTTPSConnection(HOST, 443, timeout=TIMEOUT)
@@ -174,32 +243,46 @@ class Api:
                           if a != self.address and a[1][0] != self.preferred)
 
         failure = None
+        retryable = method.upper() in {"GET", "HEAD", "OPTIONS"}
         expiry = monotonic() + DEADLINE
         while candidates and monotonic() < expiry:
             candidate = candidates.pop(0)
             reused = self.connection is not None and self.address == candidate
-            try:
-                if not reused:
-                    self._close()
+            if not reused:
+                self._close()
+                try:
                     self.connection = self._open(*candidate)
                     self.address = candidate
-                self.connection.request(method, target, payload, headers)
-                response = self.connection.getresponse()
+                except (OSError, http.client.HTTPException) as error:
+                    failure = error
+                    continue
+            connection = self.connection
+            if connection is None:
+                continue
+            try:
+                connection.request(method, target, payload, headers)
+                response = connection.getresponse()
                 raw = response.read().decode("utf-8", "replace")
-            except (OSError, http.client.HTTPException) as error:
-                self._close()
-                failure = error
-                # A reused connection that broke is usually a keep-alive the
-                # server closed, not a bad route: dial this same address once
-                # more before writing it off. A timeout is the opposite -- the
-                # route is black-holing, so move on immediately.
-                if reused and not is_timeout(error):
-                    candidates.insert(0, candidate)
+            except OSError as error:
+                failure = self._request_failure(error, retryable, reused, candidate, candidates)
+                continue
+            except http.client.HTTPException as error:
+                failure = self._request_failure(error, retryable, reused, candidate, candidates)
                 continue
             self.good_host = candidate[1][0]
             return self._decode(response.status, raw)
 
         raise ApiError("Clockify did not answer (%s)" % (describe(failure),))
+
+    def _request_failure(self, error, retryable, reused, candidate, candidates):
+        self._close()
+        if not retryable:
+            raise ApiError(
+                "Clockify may have applied the change, but its response was lost; refresh before trying again"
+            ) from error
+        if reused and not is_timeout(error):
+            candidates.insert(0, candidate)
+        return error
 
     @staticmethod
     def _decode(status, raw):
@@ -337,6 +420,15 @@ def time_entries(ident, api, params):
     ) or []
 
 
+def elapsed_whole_seconds(start, end):
+    if not start or not end:
+        return 0
+    try:
+        return max(0, int((end - start).total_seconds()))
+    except (OverflowError, ValueError):
+        return 0
+
+
 def entry_view(entry, projects_by_id):
     interval = entry.get("timeInterval") or {}
     start = parse_stamp(interval.get("start"))
@@ -356,7 +448,7 @@ def entry_view(entry, projects_by_id):
         "billable": bool(entry.get("billable")),
         "start": str(interval.get("start") or ""),
         "end": str(interval.get("end") or ""),
-        "seconds": max(0, int((end - start).total_seconds())) if start and end else 0,
+        "seconds": elapsed_whole_seconds(start, end),
         "running": start is not None and end is None,
     }
 
@@ -413,7 +505,7 @@ def snapshot(config, api, ident, with_projects=False):
         "userName": ident.user_name,
         "workspaceId": ident.workspace_id,
         "workspaceName": fetch_workspace_name(ident.workspace_id, api) if with_projects else "",
-        "defaultProjectId": str(config.get("defaultProjectId") or ""),
+        "defaultProjectId": default_project_id(config),
         "weekStart": first_day,
         "running": running,
         "todaySeconds": sum(e["seconds"] for e in finished if str(e["start"]) >= today_floor),
@@ -449,18 +541,17 @@ def open_api(config):
 
 
 def remember_host(config, api):
-    """Persist the address that answered, for the next run to start with."""
+    """Persist the address that answered without restoring stale credentials."""
     host = str(api.good_host or "")
     if host and host != str(config.get("apiHost") or ""):
-        config["apiHost"] = host
-        save_config(config)
+        update_config({"apiHost": host})
 
 
 def unconfigured(config, note=""):
     payload = base_payload()
     payload["note"] = note
     payload["weekStart"] = str(config.get("weekStart") or "monday")
-    payload["defaultProjectId"] = str(config.get("defaultProjectId") or "")
+    payload["defaultProjectId"] = default_project_id(config)
     return payload
 
 
@@ -470,7 +561,7 @@ def cmd_status(args):
     if not key:
         return unconfigured(config)
     api = open_api(config)
-    payload = snapshot(config, api, identity(config, api), with_projects=args.projects)
+    payload = snapshot(config, api, identity(identity_config(config), api), with_projects=args.projects)
     remember_host(config, api)
     return payload
 
@@ -481,25 +572,30 @@ def cmd_start(args):
     if not key:
         return unconfigured(config)
     api = open_api(config)
-    ident = identity(config, api)
+    ident = identity(identity_config(config), api)
     stop_running(ident, api)
 
-    body = {"start": utc_stamp(now_utc())}
-    description = str(args.description or "").strip()
+    body: dict[str, object] = {"start": utc_stamp(now_utc())}
+    description = (
+        sys.stdin.readline() if args.description_stdin else str(args.description or "")
+    ).strip()
     if description:
         body["description"] = description
     # An omitted --project falls back to the remembered one; an empty --project
     # is the user deliberately logging time without a project.
-    project_id = str(config.get("defaultProjectId") or "") if args.project is None else str(args.project).strip()
+    project_id = default_project_id(config) if args.project is None else str(args.project).strip()
     if project_id:
         body["projectId"] = project_id
     if args.billable:
         body["billable"] = True
     api.call("POST", "/workspaces/%s/time-entries" % ident.workspace_id, body=body)
 
-    if args.project is not None and project_id != str(config.get("defaultProjectId") or ""):
-        config["defaultProjectId"] = project_id
-        save_config(config)
+    if (
+        not environment_api_key()
+        and args.project is not None
+        and project_id != default_project_id(config)
+    ):
+        config = update_config({"defaultProjectId": project_id})
 
     payload = snapshot(config, api, ident)
     payload["note"] = "Timer started"
@@ -513,7 +609,7 @@ def cmd_stop(args):
     if not key:
         return unconfigured(config)
     api = open_api(config)
-    ident = identity(config, api)
+    ident = identity(identity_config(config), api)
     stopped = stop_running(ident, api)
     payload = snapshot(config, api, ident)
     if stopped:
@@ -531,15 +627,27 @@ def cmd_set_key(args):
         payload["ok"] = False
         payload["error"] = "No API key received"
         return payload
+    if environment_api_key():
+        payload = base_payload()
+        payload["ok"] = False
+        payload["configured"] = True
+        payload["error"] = "CLOCKIFY_API_KEY is active; remove it before storing a different key"
+        return payload
 
     # Validated before it is written, so a typo never gets stored and then
     # blamed on Clockify at the next refresh.
     config = load_config()
     api = Api(key, str(config.get("apiHost") or ""))
     ident = identity({}, api)
-    config["apiKey"] = key
-    config["workspaceId"] = ident.workspace_id
-    save_config(config)
+    removals = (
+        ("defaultProjectId",)
+        if str(config.get("workspaceId") or "") != ident.workspace_id
+        else ()
+    )
+    config = update_config(
+        {"apiKey": key, "workspaceId": ident.workspace_id},
+        removals=removals,
+    )
 
     payload = snapshot(config, api, ident, with_projects=True)
     payload["note"] = "Connected as %s" % (ident.user_name or "your Clockify account")
@@ -548,28 +656,32 @@ def cmd_set_key(args):
 
 
 def cmd_clear_key(args):
-    config = load_config()
-    config.pop("apiKey", None)
-    config.pop("workspaceId", None)
-    save_config(config)
-    return unconfigured(config, note="API key removed")
+    config = update_config(removals=("apiKey", "workspaceId", "defaultProjectId"))
+    if environment_api_key():
+        api = open_api(config)
+        ident = identity({}, api)
+        payload = snapshot(config, api, ident, with_projects=True)
+        payload["note"] = "Stored API key removed; CLOCKIFY_API_KEY is still active"
+        remember_host(config, api)
+        return payload
+    return unconfigured(config, note="Stored API key removed")
 
 
 def cmd_set_config(args):
-    config = load_config()
-    if args.project is not None:
-        config["defaultProjectId"] = str(args.project).strip()
+    changes = {}
+    if args.project is not None and not environment_api_key():
+        changes["defaultProjectId"] = str(args.project).strip()
     if args.workspace is not None:
-        config["workspaceId"] = str(args.workspace).strip()
+        changes["workspaceId"] = str(args.workspace).strip()
     if args.week_start is not None:
-        config["weekStart"] = str(args.week_start).strip().lower()
-    save_config(config)
+        changes["weekStart"] = str(args.week_start).strip().lower()
+    config = update_config(changes, reset_project_for_workspace=True)
     return {
         "ok": True,
         "error": "",
         "note": "Saved",
         "configured": bool(api_key(config)),
-        "defaultProjectId": str(config.get("defaultProjectId") or ""),
+        "defaultProjectId": default_project_id(config),
         "workspaceId": str(config.get("workspaceId") or ""),
         "weekStart": str(config.get("weekStart") or "monday"),
     }
@@ -585,6 +697,7 @@ def build_parser():
 
     start = commands.add_parser("start", help="stop whatever runs and start a new entry")
     start.add_argument("--description", default="")
+    start.add_argument("--description-stdin", action="store_true", help=argparse.SUPPRESS)
     start.add_argument("--project", default=None, help="project id, or empty for none")
     start.add_argument("--billable", action="store_true")
     start.set_defaults(handler=cmd_start)

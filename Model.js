@@ -1,3 +1,4 @@
+/* eslint-disable no-unused-vars */
 // Pure helpers for the Clockify plugin: parsing the helper's JSON and turning
 // seconds and entries into the strings the bar and the panel render. Kept out of
 // the QML so the formatting rules live in one place and stay testable by eye.
@@ -42,7 +43,7 @@ function parseStamp(value) {
   var text = String(value || "").trim()
   if (text === "") return null
   var millis = Date.parse(text)
-  return isNaN(millis) ? null : new Date(millis)
+  return Number.isNaN(millis) ? null : new Date(millis)
 }
 
 // Seconds the running entry has been going, measured against a clock the caller

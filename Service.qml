@@ -24,6 +24,7 @@ Item {
   property string lastError: ""
   property string note: ""
   property string fetchedAt: ""
+  property int authGeneration: 0
 
   readonly property bool timing: running !== null
   readonly property bool refreshing: statusProcess.running
@@ -52,14 +53,15 @@ Item {
     // The project list is only worth its extra API calls when a panel is about
     // to show it; the bar refresh runs every minute forever.
     if (withProjects === true || (!projectsLoaded && configured)) command.push("--projects")
+    statusProcess.authGeneration = root.authGeneration
     statusProcess.command = pythonCommand(command)
     statusProcess.running = true
   }
 
   function start(description, projectId) {
-    runAction([helperPath, "start",
-               "--description", String(description || ""),
-               "--project", String(projectId === undefined || projectId === null ? "" : projectId)])
+    runAction([helperPath, "start", "--description-stdin",
+               "--project", String(projectId === undefined || projectId === null ? "" : projectId)],
+              true, String(description || ""))
   }
 
   function stop() {
@@ -77,19 +79,28 @@ Item {
   function saveKey(key) {
     var trimmed = String(key || "").trim()
     if (!ready || trimmed === "" || keyProcess.running) return
+    authGeneration += 1
     note = "Checking the key with Clockify…"
     keyProcess.secret = trimmed
+    keyProcess.stdinEnabled = true
     keyProcess.command = pythonCommand([helperPath, "set-key"])
     keyProcess.running = true
   }
 
   function clearKey() {
+    authGeneration += 1
+    projects = []
+    projectsLoaded = false
+    workspaceName = ""
+    defaultProjectId = ""
     runAction([helperPath, "clear-key"])
   }
 
-  function runAction(command, expectsSnapshot) {
+  function runAction(command, expectsSnapshot, stdinText) {
     if (!ready || actionProcess.running) return
     actionProcess.expectsSnapshot = expectsSnapshot !== false
+    actionProcess.stdinText = stdinText === undefined ? "" : String(stdinText).replace(/[\r\n]+/g, " ")
+    actionProcess.stdinEnabled = stdinText !== undefined
     actionProcess.command = pythonCommand(command)
     actionProcess.running = true
   }
@@ -179,11 +190,13 @@ Item {
 
   Process {
     id: statusProcess
+    property int authGeneration: -1
     running: false
     command: []
     stdout: StdioCollector { id: statusOut; waitForEnd: true }
     stderr: StdioCollector { id: statusErr; waitForEnd: true }
     onExited: function(exitCode) {
+      if (authGeneration !== root.authGeneration) return
       if (exitCode !== 0) {
         root.lastError = root.helperFailure(statusErr.text, exitCode)
         return
@@ -196,11 +209,20 @@ Item {
     id: actionProcess
     // set-config answers without a snapshot: applying it would blank the state.
     property bool expectsSnapshot: true
+    property string stdinText: ""
     running: false
     command: []
+    onStarted: {
+      if (!stdinEnabled) return
+      write(stdinText + "\n")
+      stdinText = ""
+      stdinEnabled = false
+    }
     stdout: StdioCollector { id: actionOut; waitForEnd: true }
     stderr: StdioCollector { id: actionErr; waitForEnd: true }
     onExited: function(exitCode) {
+      stdinText = ""
+      stdinEnabled = false
       if (exitCode !== 0) {
         root.lastError = root.helperFailure(actionErr.text, exitCode)
         return
