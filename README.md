@@ -4,15 +4,16 @@ This fork of [matyssxdxd/clockify](https://github.com/matyssxdxd/clockify)
 hardens local API-key storage, concurrent updates, network retries, and handling
 of text received from Clockify.
 
-A [Clockify](https://clockify.me) timer in the Omarchy bar. The pill is one
-glyph -- bold while a timer runs -- and the panel starts and stops it, picks a
-project, and totals the day and the week.
+A [Clockify](https://clockify.me) timer in the Omarchy bar. While a timer runs,
+the pill shows its elapsed time in the active theme's green. The panel starts
+and stops timers, picks a project, and totals the day and the week.
 
 ```
-󱎫   ← bar pill: bold while timing, dimmed when no timer runs
+󱎫  0:42:17   ← live while timing
+󱎫            ← dimmed while idle
 ```
 
-Hover it for the running task, its elapsed time, and today's total.
+Hover it for the running task and today's total.
 
 ![The bar glyph and the Clockify panel](preview.png)
 

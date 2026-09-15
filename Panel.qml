@@ -24,6 +24,8 @@ Panel {
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.55)
+  property string themeGreenColor: ""
+  readonly property color runningColor: themeGreenColor !== "" ? themeGreenColor : Color.accent
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
   readonly property bool hideWhenIdle: setting("hideWhenIdle", false) === true
@@ -180,11 +182,25 @@ Panel {
     onKeyRejected: function(message) { Qt.callLater(function() { keyField.forceActiveFocus() }) }
   }
 
-  // Seconds only matter while the popup shows a running timer; nothing outside it
-  // counts them, and repainting every monitor's bar each second would be waste.
+  FileView {
+    id: themeColorsFile
+    path: Quickshell.env("HOME") + "/.local/state/omarchy/current/theme/colors.toml"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.themeGreenColor = Model.themeGreen(text(), "")
+    onFileChanged: reload()
+    onLoadFailed: root.themeGreenColor = ""
+  }
+
+  Connections {
+    target: Color
+    function onForegroundChanged() { themeColorsFile.reload() }
+    function onAccentChanged() { themeColorsFile.reload() }
+  }
+
   SystemClock {
     id: clock
-    precision: root.opened && clockify.timing ? SystemClock.Seconds : SystemClock.Minutes
+    precision: clockify.timing ? SystemClock.Seconds : SystemClock.Minutes
   }
 
   Connections {
@@ -259,11 +275,11 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    // The glyph alone -- bold while a timer runs, dimmed when none does. `text`
-    // still sizes the pill and feeds the hover tooltip, but WidgetButton's own
-    // label is hidden: it exposes no font weight, so the visible copy below is
-    // the one that can be bound to.
-    text: "󱎫"
+    // The hidden label sizes the pill. The visible copy below can use bold text
+    // and the theme's green while a timer runs.
+    text: clockify.timing && !(bar && bar.vertical)
+      ? "󱎫  " + Model.formatClock(root.elapsedSeconds)
+      : "󱎫"
     labelVisible: false
     dimmed: !clockify.timing
     tooltipText: Model.barTooltip(clockify.running, root.elapsedSeconds, root.todaySeconds)
@@ -276,7 +292,7 @@ Panel {
     Text {
       anchors.centerIn: parent
       text: button.text
-      color: button.foreground
+      color: clockify.timing ? root.runningColor : button.foreground
       font.family: button.fontFamily
       font.pixelSize: button.fontSize
       font.bold: clockify.timing

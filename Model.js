@@ -22,6 +22,19 @@ function pad2(value) {
   return value < 10 ? "0" + value : String(value)
 }
 
+function themeGreen(raw, fallback) {
+  var green = ""
+  var color2 = ""
+  var lines = String(raw || "").split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var match = lines[i].match(/^\s*(green|color2)\s*=\s*["']?(#[0-9A-Fa-f]{6})/)
+    if (!match) continue
+    if (match[1] === "green") green = match[2]
+    else color2 = match[2]
+  }
+  return green || color2 || fallback
+}
+
 // H:MM:SS, the shape Clockify's own timer uses.
 function formatClock(seconds) {
   var total = Math.max(0, Math.floor(Number(seconds) || 0))

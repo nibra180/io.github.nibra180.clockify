@@ -41,4 +41,9 @@ assert.equal(model.projectOptions(projects, "", true)[0].value, "");
 assert.equal(model.projectOptions(projects, "", false).length, 1);
 assert.equal(model.projectOptions(projects, "", false)[0].value, "p1");
 
+const themeColors = 'color2 = "#112233"\ngreen = "#3ad900"';
+assert.equal(model.themeGreen(themeColors, "#ffffff"), "#3ad900");
+assert.equal(model.themeGreen('color2 = "#112233"', "#ffffff"), "#112233");
+assert.equal(model.themeGreen("", "#ffffff"), "#ffffff");
+
 console.log("Model tests passed");
